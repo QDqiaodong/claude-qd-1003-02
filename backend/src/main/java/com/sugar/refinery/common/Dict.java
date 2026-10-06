@@ -72,11 +72,16 @@ public final class Dict {
     /** 品类：白砂糖 / 赤砂糖 / 绵白糖 / 冰糖 */
     public static final List<String> SUGAR_GRADES = List.of("白砂糖", "赤砂糖", "绵白糖", "冰糖");
 
-    public static final List<String> BATCH_STATUSES = List.of("待检", "已入库", "已发运");
+    public static final List<String> BATCH_STATUSES = List.of("待复检", "已入库", "已发运");
 
-    /** 待检 → 已入库 → 已发运，逐级推进 */
+    /** 质量复检结论：通过 / 不通过；尚无复检记录时对外派生为「待复检」 */
+    public static final List<String> INSPECTION_RESULTS = List.of("通过", "不通过");
+
+    public static final List<String> INSPECTION_STATUSES = List.of("待复检", "通过", "不通过");
+
+    /** 待复检 → 已入库 → 已发运，复检通过是入库与发运的共同前置条件 */
     private static final Map<String, List<String>> BATCH_NEXT = Map.of(
-            "待检", List.of("已入库"),
+            "待复检", List.of("已入库"),
             "已入库", List.of("已发运"),
             "已发运", List.of());
 
@@ -94,6 +99,10 @@ public final class Dict {
 
     /** 成品糖纯度下限（%），低于此值只能判为赤砂糖 */
     public static final BigDecimal MIN_WHITE_PURITY = BigDecimal.valueOf(99.5);
+
+    /** 复检指标百分比取值范围 */
+    public static final BigDecimal MIN_INSPECTION_PERCENT = BigDecimal.ZERO;
+    public static final BigDecimal MAX_INSPECTION_PERCENT = BigDecimal.valueOf(100);
 
     /** 单批次最大装载量（千克），超过需拆分 */
     public static final BigDecimal MAX_BATCH_KG = BigDecimal.valueOf(60000);
@@ -162,6 +171,20 @@ public final class Dict {
 
     public static boolean canTransferBatch(String from, String to) {
         return BATCH_NEXT.getOrDefault(from, List.of()).contains(to);
+    }
+
+    public static boolean isValidInspectionResult(String r) {
+        return r != null && INSPECTION_RESULTS.contains(r);
+    }
+
+    public static boolean isValidInspectionStatus(String s) {
+        return s != null && INSPECTION_STATUSES.contains(s);
+    }
+
+    public static boolean isPercent(BigDecimal v) {
+        return v != null
+                && v.compareTo(MIN_INSPECTION_PERCENT) >= 0
+                && v.compareTo(MAX_INSPECTION_PERCENT) <= 0;
     }
 
     public static boolean isValidWarehouse(String w) {

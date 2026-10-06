@@ -1,9 +1,51 @@
--- H2（MODE=MySQL）测试库结构：与 MySQL schema.sql 同构，只放洗罐排程闭环测试需要的
--- evap_pan / pan_wash 两表；pan_wash 的生成列 + 唯一索引与 CHECK 约束一并保留，
--- 让「同一罐不能有两个未完成安排」「完成必须带完成时间」在数据库层也被验证。
+-- H2（MODE=MySQL）测试库结构：与 MySQL schema.sql 同构，保留闭环测试涉及的
+-- 洗罐、成品糖批次、质量复检表；唯一索引和 CHECK 约束在数据库层兜底。
 
+DROP TABLE IF EXISTS feed_batch;
+DROP TABLE IF EXISTS sugar_quality_inspection;
+DROP TABLE IF EXISTS sugar_batch;
 DROP TABLE IF EXISTS pan_wash;
 DROP TABLE IF EXISTS evap_pan;
+
+CREATE TABLE sugar_batch (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    batch_no        VARCHAR(32) NOT NULL UNIQUE,
+    grade           VARCHAR(16) NOT NULL,
+    quantity_kg     DECIMAL(12,2) NOT NULL,
+    brix            DECIMAL(5,2) NOT NULL,
+    purity          DECIMAL(5,2) NOT NULL,
+    fiber           DECIMAL(5,2) NOT NULL,
+    warehouse       VARCHAR(24) NOT NULL,
+    status          VARCHAR(16) NOT NULL,
+    current_version INT NOT NULL DEFAULT 0,
+    produced_at     TIMESTAMP,
+    CONSTRAINT ck_sugar_status CHECK (status IN ('待复检', '已入库', '已发运')),
+    CONSTRAINT ck_sugar_current_version CHECK (current_version >= 0)
+);
+
+CREATE TABLE sugar_quality_inspection (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    batch_id      BIGINT NOT NULL,
+    batch_no      VARCHAR(32) NOT NULL,
+    version       INT NOT NULL,
+    request_id    VARCHAR(36) NOT NULL,
+    inspected_at  TIMESTAMP NOT NULL,
+    brix          DECIMAL(5,2) NOT NULL,
+    purity        DECIMAL(5,2) NOT NULL,
+    fiber         DECIMAL(5,2) NOT NULL,
+    conclusion    VARCHAR(16) NOT NULL,
+    reject_reason VARCHAR(255),
+    created_at    TIMESTAMP NOT NULL,
+    CONSTRAINT fk_sugar_inspection_batch FOREIGN KEY (batch_id) REFERENCES sugar_batch(id),
+    CONSTRAINT uq_inspection_request UNIQUE (request_id),
+    CONSTRAINT uq_inspection_version UNIQUE (batch_id, version),
+    CONSTRAINT ck_inspection_version CHECK (version > 0),
+    CONSTRAINT ck_inspection_metrics CHECK
+      (brix BETWEEN 0 AND 100 AND purity BETWEEN 0 AND 100 AND fiber BETWEEN 0 AND 100),
+    CONSTRAINT ck_inspection_conclusion CHECK
+      ((conclusion = '通过' AND reject_reason IS NULL)
+       OR (conclusion = '不通过' AND reject_reason IS NOT NULL AND CHAR_LENGTH(TRIM(reject_reason)) > 0))
+);
 
 CREATE TABLE evap_pan (
     id           BIGINT AUTO_INCREMENT PRIMARY KEY,

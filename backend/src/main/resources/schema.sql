@@ -20,6 +20,7 @@ USE sugar_refinery;
 
 SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS feed_batch;
+DROP TABLE IF EXISTS sugar_quality_inspection;
 DROP TABLE IF EXISTS sugar_batch;
 DROP TABLE IF EXISTS pan_wash;
 DROP TABLE IF EXISTS evap_pan;
@@ -135,18 +136,48 @@ CREATE TABLE pan_wash (
 
 -- ---------------- 成品糖批次 ----------------
 CREATE TABLE sugar_batch (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    batch_no    VARCHAR(32) NOT NULL UNIQUE,
-    grade       VARCHAR(16) NOT NULL COMMENT '白砂糖/赤砂糖/绵白糖/冰糖',
-    quantity_kg DECIMAL(12,2) NOT NULL,
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    batch_no        VARCHAR(32) NOT NULL UNIQUE,
+    grade           VARCHAR(16) NOT NULL COMMENT '白砂糖/赤砂糖/绵白糖/冰糖',
+    quantity_kg     DECIMAL(12,2) NOT NULL,
     -- ↓↓↓ 同样是 @CompositeType record 组件
-    brix        DECIMAL(5,2) NOT NULL,
-    purity      DECIMAL(5,2) NOT NULL,
-    fiber       DECIMAL(5,2) NOT NULL DEFAULT 0,
+    brix            DECIMAL(5,2) NOT NULL,
+    purity          DECIMAL(5,2) NOT NULL,
+    fiber           DECIMAL(5,2) NOT NULL DEFAULT 0,
     -- ↑↑↑
-    warehouse   VARCHAR(24) NOT NULL COMMENT '1号糖仓/2号糖仓/3号糖仓',
-    status      VARCHAR(16) NOT NULL COMMENT '待检/已入库/已发运',
-    produced_at DATETIME
+    warehouse       VARCHAR(24) NOT NULL COMMENT '1号糖仓/2号糖仓/3号糖仓',
+    status          VARCHAR(16) NOT NULL COMMENT '待复检/已入库/已发运',
+    current_version INT NOT NULL DEFAULT 0 COMMENT '当前有效复检版本，0为待复检',
+    produced_at     DATETIME,
+    CONSTRAINT ck_sugar_status CHECK (status IN ('待复检', '已入库', '已发运')),
+    CONSTRAINT ck_sugar_current_version CHECK (current_version >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 成品糖质量复检 ----------------
+-- 复检按批号 + 版本只追加，不覆盖历史；request_id 保证重复点击 / 超时重试只有一份记录。
+-- current_version 与新版本由同一事务更新，失败整体回滚，避免孤立复检记录或悬空版本。
+CREATE TABLE sugar_quality_inspection (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    batch_id      BIGINT NOT NULL,
+    batch_no      VARCHAR(32) NOT NULL COMMENT '批号快照',
+    version       INT NOT NULL COMMENT '复检版本，从1开始',
+    request_id    VARCHAR(36) NOT NULL COMMENT '幂等键：一次复检提交只落一条',
+    inspected_at  DATETIME NOT NULL COMMENT '复检时间',
+    brix          DECIMAL(5,2) NOT NULL COMMENT '复检糖度',
+    purity        DECIMAL(5,2) NOT NULL COMMENT '复检纯度',
+    fiber         DECIMAL(5,2) NOT NULL COMMENT '复检纤维分',
+    conclusion    VARCHAR(16) NOT NULL COMMENT '通过/不通过',
+    reject_reason VARCHAR(255) COMMENT '不通过原因，通过时为空',
+    created_at    DATETIME NOT NULL,
+    CONSTRAINT fk_sugar_inspection_batch FOREIGN KEY (batch_id) REFERENCES sugar_batch(id),
+    CONSTRAINT uq_inspection_request UNIQUE (request_id),
+    CONSTRAINT uq_inspection_version UNIQUE (batch_id, version),
+    CONSTRAINT ck_inspection_version CHECK (version > 0),
+    CONSTRAINT ck_inspection_metrics CHECK
+      (brix BETWEEN 0 AND 100 AND purity BETWEEN 0 AND 100 AND fiber BETWEEN 0 AND 100),
+    CONSTRAINT ck_inspection_conclusion CHECK
+      ((conclusion = '通过' AND reject_reason IS NULL)
+       OR (conclusion = '不通过' AND reject_reason IS NOT NULL AND CHAR_LENGTH(TRIM(reject_reason)) > 0))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- =====================================================================
@@ -203,9 +234,18 @@ VALUES
  UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR,
  UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR, NULL);
 
-INSERT INTO sugar_batch (batch_no, grade, quantity_kg, brix, purity, fiber, warehouse, status, produced_at) VALUES
-('SB-2026001', '白砂糖', 48000.00, 99.90, 99.70, 0.00, '1号糖仓', '已入库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY),
-('SB-2026002', '白砂糖', 52000.00, 99.80, 99.60, 0.00, '1号糖仓', '已发运', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 DAY),
-('SB-2026003', '赤砂糖', 31000.00, 97.50, 96.20, 0.00, '2号糖仓', '已入库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY),
-('SB-2026004', '白砂糖', 45500.00, 99.85, 99.65, 0.00, '2号糖仓', '待检',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR),
-('SB-2026005', '绵白糖', 28000.00, 99.10, 98.40, 0.00, '3号糖仓', '已入库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 12 HOUR);
+INSERT INTO sugar_batch (batch_no, grade, quantity_kg, brix, purity, fiber, warehouse, status, current_version, produced_at) VALUES
+('SB-2026001', '白砂糖', 48000.00, 99.90, 99.70, 0.00, '1号糖仓', '已入库', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY),
+('SB-2026002', '白砂糖', 52000.00, 99.80, 99.60, 0.00, '1号糖仓', '已发运', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 DAY),
+('SB-2026003', '赤砂糖', 31000.00, 97.50, 96.20, 0.00, '2号糖仓', '待复检', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY),
+('SB-2026004', '白砂糖', 45500.00, 99.85, 99.65, 0.00, '2号糖仓', '待复检', 0, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR),
+('SB-2026005', '绵白糖', 28000.00, 99.10, 98.40, 0.00, '3号糖仓', '已入库', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 12 HOUR),
+('SB-2026006', '赤砂糖', 26000.00, 96.90, 95.80, 0.10, '3号糖仓', '待复检', 0, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 4 HOUR);
+
+INSERT INTO sugar_quality_inspection
+  (batch_id, batch_no, version, request_id, inspected_at, brix, purity, fiber, conclusion, reject_reason, created_at)
+VALUES
+(1, 'SB-2026001', 1, 'seed-inspection-0001', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 46 HOUR, 99.92, 99.72, 0.00, '通过', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 46 HOUR),
+(2, 'SB-2026002', 1, 'seed-inspection-0002', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 70 HOUR, 99.84, 99.64, 0.00, '通过', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 70 HOUR),
+(3, 'SB-2026003', 1, 'seed-inspection-0003', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 20 HOUR, 97.20, 95.90, 0.18, '不通过', '色值偏高且纤维分超标，需重新整理批次', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 20 HOUR),
+(5, 'SB-2026005', 1, 'seed-inspection-0005', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 11 HOUR, 99.18, 98.52, 0.00, '通过', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 11 HOUR);
