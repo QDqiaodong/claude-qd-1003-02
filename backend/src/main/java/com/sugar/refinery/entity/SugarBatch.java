@@ -21,10 +21,13 @@ import lombok.Setter;
 /**
  * 成品糖批次。
  *
- * <p>分蜜干燥后按批打包入库，纯度达到 {@code MIN_WHITE_PURITY} 才能判白砂糖，
- * 否则只能判赤砂糖。状态：待检 → 已入库 → 已发运。</p>
+ * <p>分蜜干燥后按批打包，纯度达到 {@code MIN_WHITE_PURITY} 才能判白砂糖，
+ * 否则只能判赤砂糖。新建批次先进入「待复检」，质量复检通过后才允许入库与发运，
+ * 状态：待复检 → 已入库 → 已发运。</p>
  *
- * <p>品质同样用 record {@link JuiceQuality} + {@code @CompositeType} 承载。</p>
+ * <p>品质同样用 record {@link JuiceQuality} + {@code @CompositeType} 承载。
+ * 复检视图字段（当前版本 / 结论 / 复检时间 / 发运资格）由服务层按最新一版
+ * {@code sugar_reinspection} 回填，不落本批次表。</p>
  */
 @Entity
 @Table(name = "sugar_batch")
@@ -55,12 +58,42 @@ public class SugarBatch {
     @Column(name = "warehouse", nullable = false, length = 24)
     private String warehouse;
 
-    /** 待检 / 已入库 / 已发运 */
+    /** 待复检 / 已入库 / 已发运 */
     @Column(name = "status", nullable = false, length = 16)
     private String status;
 
     @Column(name = "produced_at")
     private LocalDateTime producedAt;
+
+    // ---------------- 质量复检视图字段（服务层按最新一版回填，不入库） ----------------
+
+    /** 当前复检版本号；从未复检为 null */
+    @Transient
+    private Integer reviewVersion;
+
+    /** 当前复检结论：通过 / 不通过；从未复检为 null */
+    @Transient
+    private String reviewResult;
+
+    /** 复检状态：待复检（未复检或最新不通过）/ 通过 / 不通过 */
+    @Transient
+    private String reviewStatus;
+
+    /** 最近复检时间（最新一版录入的复检时间） */
+    @Transient
+    private LocalDateTime lastInspectTime;
+
+    /** 最近一次不通过原因（最新一版不通过时有值） */
+    @Transient
+    private String lastRejectReason;
+
+    /** 发运资格：最新一版复检通过且尚未发运 */
+    @Transient
+    private boolean shippable;
+
+    /** 未取得发运资格 / 不能继续流转的原因 */
+    @Transient
+    private String shipLockReason;
 
     /** 折合吨数，派生字段 */
     @Transient

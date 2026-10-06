@@ -63,6 +63,8 @@ export default {
   // ---------------- 成品糖批次 ----------------
   listBatches: (p) => call(http.get('/sugar-batches', params(p))),
   createBatch: (d) => call(http.post('/sugar-batches', d)),
+  reinspectBatch: (id, d) => call(http.post(`/sugar-batches/${id}/reinspect`, d)),
+  reinspections: (id) => call(http.get(`/sugar-batches/${id}/reinspections`)),
   storeBatch: (id) => call(http.post(`/sugar-batches/${id}/store`)),
   shipBatch: (id) => call(http.post(`/sugar-batches/${id}/ship`)),
   stockByWarehouse: () => call(http.get('/sugar-batches/stock-by-warehouse'))

@@ -72,13 +72,20 @@ public final class Dict {
     /** 品类：白砂糖 / 赤砂糖 / 绵白糖 / 冰糖 */
     public static final List<String> SUGAR_GRADES = List.of("白砂糖", "赤砂糖", "绵白糖", "冰糖");
 
-    public static final List<String> BATCH_STATUSES = List.of("待检", "已入库", "已发运");
+    /** 批次状态：待复检 → 已入库 → 已发运 */
+    public static final List<String> BATCH_STATUSES = List.of("待复检", "已入库", "已发运");
 
-    /** 待检 → 已入库 → 已发运，逐级推进 */
+    /** 待复检 → 已入库 → 已发运，逐级推进；入库 / 发运前最新复检结论必须为「通过」 */
     private static final Map<String, List<String>> BATCH_NEXT = Map.of(
-            "待检", List.of("已入库"),
+            "待复检", List.of("已入库"),
             "已入库", List.of("已发运"),
             "已发运", List.of());
+
+    /** 复检结论：通过 / 不通过（不通过必须留原因） */
+    public static final List<String> REINSPECT_RESULTS = List.of("通过", "不通过");
+
+    /** 复检状态（页面筛选项）：待复检（未复检或最新不通过）/ 通过 / 不通过 */
+    public static final List<String> REVIEW_STATUSES = List.of("待复检", "通过", "不通过");
 
     public static final List<String> WAREHOUSES = List.of("1号糖仓", "2号糖仓", "3号糖仓");
 
@@ -154,6 +161,15 @@ public final class Dict {
 
     public static boolean isValidSugarGrade(String g) {
         return g != null && SUGAR_GRADES.contains(g);
+    }
+
+    public static boolean isValidReinspectResult(String r) {
+        return r != null && REINSPECT_RESULTS.contains(r);
+    }
+
+    /** 复检状态筛选项：待复检 / 通过 / 不通过 */
+    public static boolean isValidReviewStatus(String s) {
+        return s != null && REVIEW_STATUSES.contains(s);
     }
 
     public static boolean isValidBatchStatus(String s) {

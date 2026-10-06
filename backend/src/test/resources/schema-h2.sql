@@ -1,9 +1,13 @@
--- H2（MODE=MySQL）测试库结构：与 MySQL schema.sql 同构，只放洗罐排程闭环测试需要的
--- evap_pan / pan_wash 两表；pan_wash 的生成列 + 唯一索引与 CHECK 约束一并保留，
--- 让「同一罐不能有两个未完成安排」「完成必须带完成时间」在数据库层也被验证。
+-- H2（MODE=MySQL）测试库结构：与 MySQL schema.sql 同构。
+-- 放洗罐排程闭环需要的 evap_pan / pan_wash，以及成品糖质量复检—发运锁定需要的
+-- sugar_batch / sugar_reinspection；生成列唯一索引、CHECK 约束与 MySQL 版一并保留，
+-- 让「同一罐不能有两个未完成安排」「完成必须带完成时间」「复检不通过必须留原因」
+-- 「按批号 + 版本只追加不改写」在数据库层也被验证。
 
 DROP TABLE IF EXISTS pan_wash;
 DROP TABLE IF EXISTS evap_pan;
+DROP TABLE IF EXISTS sugar_reinspection;
+DROP TABLE IF EXISTS sugar_batch;
 
 CREATE TABLE evap_pan (
     id           BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -39,4 +43,41 @@ CREATE TABLE pan_wash (
        OR (status = '待执行' AND started_at IS NULL AND completed_at IS NULL)
        OR (status = '已取消' AND cancelled_at IS NOT NULL)),
     CONSTRAINT uq_active_pan UNIQUE (active_pan_id)
+);
+
+CREATE TABLE sugar_batch (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    batch_no    VARCHAR(32) NOT NULL UNIQUE,
+    grade       VARCHAR(16) NOT NULL,
+    quantity_kg DECIMAL(12,2) NOT NULL,
+    brix        DECIMAL(5,2) NOT NULL,
+    purity      DECIMAL(5,2) NOT NULL,
+    fiber       DECIMAL(5,2) NOT NULL DEFAULT 0,
+    warehouse   VARCHAR(24) NOT NULL,
+    status      VARCHAR(16) NOT NULL,
+    produced_at TIMESTAMP
+);
+
+CREATE TABLE sugar_reinspection (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    batch_id      BIGINT NOT NULL,
+    batch_no      VARCHAR(32) NOT NULL,
+    version       INT NOT NULL,
+    request_id    VARCHAR(36) NOT NULL UNIQUE,
+    inspect_time  TIMESTAMP NOT NULL,
+    brix          DECIMAL(5,2) NOT NULL,
+    purity        DECIMAL(5,2) NOT NULL,
+    fiber         DECIMAL(5,2) NOT NULL,
+    result        VARCHAR(16) NOT NULL,
+    reason        VARCHAR(255),
+    created_at    TIMESTAMP,
+    CONSTRAINT fk_review_batch FOREIGN KEY (batch_id) REFERENCES sugar_batch(id),
+    CONSTRAINT uq_review_version UNIQUE (batch_id, version),
+    CONSTRAINT ck_review_result CHECK (result IN ('通过', '不通过')),
+    CONSTRAINT ck_review_reason CHECK
+      ((result = '不通过' AND reason IS NOT NULL AND CHAR_LENGTH(TRIM(reason)) > 0)
+       OR (result = '通过' AND reason IS NULL)),
+    CONSTRAINT ck_review_quality CHECK
+      (brix BETWEEN 0 AND 100 AND purity BETWEEN 0 AND 100 AND fiber BETWEEN 0 AND 100),
+    CONSTRAINT ck_review_version CHECK (version > 0)
 );

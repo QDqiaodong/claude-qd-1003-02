@@ -19,6 +19,7 @@ CREATE DATABASE IF NOT EXISTS sugar_refinery
 USE sugar_refinery;
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS sugar_reinspection;
 DROP TABLE IF EXISTS feed_batch;
 DROP TABLE IF EXISTS sugar_batch;
 DROP TABLE IF EXISTS pan_wash;
@@ -134,6 +135,7 @@ CREATE TABLE pan_wash (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 成品糖批次 ----------------
+-- 新建批次先进入「待复检」，复检通过才允许入库与发运。
 CREATE TABLE sugar_batch (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY,
     batch_no    VARCHAR(32) NOT NULL UNIQUE,
@@ -145,8 +147,39 @@ CREATE TABLE sugar_batch (
     fiber       DECIMAL(5,2) NOT NULL DEFAULT 0,
     -- ↑↑↑
     warehouse   VARCHAR(24) NOT NULL COMMENT '1号糖仓/2号糖仓/3号糖仓',
-    status      VARCHAR(16) NOT NULL COMMENT '待检/已入库/已发运',
+    status      VARCHAR(16) NOT NULL COMMENT '待复检/已入库/已发运',
     produced_at DATETIME
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 成品糖质量复检 ----------------
+-- 复检按批号 + 版本逐版保存，只追加不改写：(batch_id, version) 唯一。
+-- request_id 是幂等键，重复点击 / 请求超时重试带同一 request_id，只落一份有效记录。
+-- 已入库 / 已发运的批次不能回写旧版本：重新复检必须以「当前版本 + 1」落新版本，
+-- 历史逐版保留（应用在批次行锁内校验版本，唯一索引在数据库层兜底）。
+-- 不通过必须留原因；CHECK 约束保证三指标在 0~100、结论取值合法，
+-- 任何校验失败事务整体回滚，不会只落下复检记录。
+CREATE TABLE sugar_reinspection (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    batch_id      BIGINT NOT NULL COMMENT '被复检批次',
+    batch_no      VARCHAR(32) NOT NULL COMMENT '批号快照',
+    version       INT NOT NULL COMMENT '批号内版本号，从 1 递增',
+    request_id    VARCHAR(36) NOT NULL UNIQUE COMMENT '幂等键：同一复检请求只落一版',
+    inspect_time  DATETIME NOT NULL COMMENT '值班员录入的复检时间',
+    brix          DECIMAL(5,2) NOT NULL COMMENT '复检糖度',
+    purity        DECIMAL(5,2) NOT NULL COMMENT '复检纯度 %',
+    fiber         DECIMAL(5,2) NOT NULL COMMENT '复检纤维分 %',
+    result        VARCHAR(16) NOT NULL COMMENT '通过/不通过',
+    reason        VARCHAR(255) COMMENT '不通过原因（不通过必填，通过留空）',
+    created_at    DATETIME,
+    CONSTRAINT fk_review_batch FOREIGN KEY (batch_id) REFERENCES sugar_batch(id),
+    CONSTRAINT uq_review_version UNIQUE (batch_id, version),
+    CONSTRAINT ck_review_result CHECK (result IN ('通过', '不通过')),
+    CONSTRAINT ck_review_reason CHECK
+      ((result = '不通过' AND reason IS NOT NULL AND CHAR_LENGTH(TRIM(reason)) > 0)
+       OR (result = '通过' AND reason IS NULL)),
+    CONSTRAINT ck_review_quality CHECK
+      (brix BETWEEN 0 AND 100 AND purity BETWEEN 0 AND 100 AND fiber BETWEEN 0 AND 100),
+    CONSTRAINT ck_review_version CHECK (version > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- =====================================================================
@@ -207,5 +240,34 @@ INSERT INTO sugar_batch (batch_no, grade, quantity_kg, brix, purity, fiber, ware
 ('SB-2026001', '白砂糖', 48000.00, 99.90, 99.70, 0.00, '1号糖仓', '已入库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY),
 ('SB-2026002', '白砂糖', 52000.00, 99.80, 99.60, 0.00, '1号糖仓', '已发运', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 DAY),
 ('SB-2026003', '赤砂糖', 31000.00, 97.50, 96.20, 0.00, '2号糖仓', '已入库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY),
-('SB-2026004', '白砂糖', 45500.00, 99.85, 99.65, 0.00, '2号糖仓', '待检',   UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR),
+('SB-2026004', '白砂糖', 45500.00, 99.85, 99.65, 0.00, '2号糖仓', '待复检', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 8 HOUR),
 ('SB-2026005', '绵白糖', 28000.00, 99.10, 98.40, 0.00, '3号糖仓', '已入库', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 12 HOUR);
+
+-- 质量复检种子：批次 id 与上面的插入顺序 1~5 对应。
+-- SB-2026001（已入库）/ SB-2026002（已发运）：v1 复检通过，已解锁；
+-- SB-2026003（已入库）：v1 不通过（色值偏高）→ v2 通过后才入的库，演示版本递增与历史保留；
+-- SB-2026004（待复检）：v1 复检不通过（水分超标），入库 / 发运被锁定，等待重新复检；
+-- SB-2026005（已入库）：v1 复检通过。
+INSERT INTO sugar_reinspection
+  (batch_id, batch_no, version, request_id, inspect_time, brix, purity, fiber, result, reason, created_at)
+VALUES
+(1, 'SB-2026001', 1, 'seed-req-s0001',
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY + INTERVAL 1 HOUR,
+ 99.90, 99.72, 0.05, '通过', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY + INTERVAL 1 HOUR),
+(2, 'SB-2026002', 1, 'seed-req-s0002',
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 DAY + INTERVAL 2 HOUR,
+ 99.82, 99.65, 0.04, '通过', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 DAY + INTERVAL 2 HOUR),
+(3, 'SB-2026003', 1, 'seed-req-s0003',
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY + INTERVAL 4 HOUR,
+ 97.40, 96.10, 0.20, '不通过', '色值偏高，不符合当批内控标准，需重新取样',
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 DAY + INTERVAL 4 HOUR),
+(3, 'SB-2026003', 2, 'seed-req-s0004',
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY - INTERVAL 2 HOUR,
+ 97.60, 96.35, 0.12, '通过', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY - INTERVAL 2 HOUR),
+(4, 'SB-2026004', 1, 'seed-req-s0005',
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR,
+ 99.70, 99.55, 0.35, '不通过', '干燥水分超标（复检样品 0.35%），需返料再干燥',
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR),
+(5, 'SB-2026005', 1, 'seed-req-s0006',
+ UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 10 HOUR,
+ 99.15, 98.50, 0.06, '通过', NULL, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 10 HOUR);
